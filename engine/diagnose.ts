@@ -2,12 +2,13 @@
 //
 // Method: satellite-normalised performance ratio (PR).
 //   PR = energy the inverter reports (kWh) / (plane-of-array irradiation (kWh/m²) × kWp)
-// The satellite irradiation already includes clouds and aerosols, so weather and haze
-// are divided out. A falling PR means the system itself is losing output
-// (soiling, shading, faults). That is the only loss we call "fixable".
+// The satellite irradiation includes clouds and aerosols, so it normalises for the sunlight
+// that was available. It does NOT remove all uncertainty: satellite estimation error, local
+// shading, panel temperature, the true orientation and system differences remain. So a low
+// PR is "possible system underperformance", never a diagnosis of a specific cause.
 //
 // We deliberately do NOT model a clear-sky baseline or attribute loss to smog.
-// "Sunlight vs your best recent day" is a measured satellite-to-satellite comparison.
+// "Sunlight vs your best recent day" is a satellite-to-satellite comparison.
 
 export interface HourlySeries {
   time: string[]; // local ISO, e.g. "2026-10-10T13:00"; value = mean of the PRECEDING hour
@@ -79,7 +80,7 @@ export interface Diagnosis {
   baselinePR: number;
   baselineSource: "history" | "nominal";
   today: DayResult;
-  systemLossPct: number; // fixable share, 0..1
+  systemLossPct: number; // possible underperformance vs baseline, 0..1
   sunlightBelowBestPct: number; // today's satellite sunlight vs brightest day in the window, 0..1
   recoverableKWhToday: number;
   recoverableINRperMonth?: number;
@@ -149,7 +150,7 @@ export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]
 
   // Guards before any verdict.
   if (today.irradiation < 1.5) {
-    return { ...base, verdict: "insufficient-sun", reason: "Too little sunlight so far today to judge the panels.", systemLossPct: 0, recoverableKWhToday: 0, confidence: "low", notes };
+    return { ...base, verdict: "insufficient-sun", reason: "Too little sunlight on this day to judge the system.", systemLossPct: 0, recoverableKWhToday: 0, confidence: "low", notes };
   }
   if (today.pr > 1.05) {
     return { ...base, verdict: "check-inputs", reason: "The reading is higher than the sunlight allows. Check the system size (kWp), the date, or the reading itself.", systemLossPct: 0, recoverableKWhToday: 0, confidence: "low", notes };
@@ -165,12 +166,12 @@ export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]
   } else {
     verdict = today.pr < 0.6 ? "act" : today.pr < 0.7 ? "watch" : "ok";
   }
-  const reason =
+  const reason: string =
     verdict === "ok"
-      ? "Your panels are converting today's sunlight about as well as they should."
+      ? "Output matches the sunlight that reached your roof, within normal uncertainty."
       : verdict === "watch"
-        ? "Your panels are slightly below their usual level for today's sunlight. Check again in a day or two."
-        : "Your panels are making noticeably less than today's sunlight allows. Dust, shade or a fault is likely. Cleaning is the first thing to try.";
+        ? "Output is a little below your usual level for the sunlight available. This can be normal variation. Check again after a few more days."
+        : "Output is clearly below what the available sunlight would normally produce. This is possible system underperformance. Check for dirt, new shade or an inverter fault, or ask your installer to inspect it.";
 
   let confidence: Diagnosis["confidence"] = baselineSource === "history" ? "high" : "medium";
   if (todayIrr.missingDaylightHours > 2) {
@@ -179,6 +180,7 @@ export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]
   }
   if (readings[readings.length - 1].readAt) notes.push(`Compared against satellite sunlight up to ${readings[readings.length - 1].readAt}.`);
 
+  notes.push("Satellite sunlight is an estimate for a ~5 km area. Local shade, panel temperature, orientation and system differences are not captured, so small differences are within normal uncertainty.");
   const monthKWh = recoverableKWhToday * 30;
   const out: Diagnosis = { ...base, verdict, reason, systemLossPct, recoverableKWhToday, confidence, notes };
   if (cfg.tariffINRperKWh) out.recoverableINRperMonth = monthKWh * cfg.tariffINRperKWh;

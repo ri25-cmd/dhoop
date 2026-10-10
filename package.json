@@ -3,14 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --no-warnings --test engine/*.test.ts"
+    "test": "node --experimental-strip-types --no-warnings --test engine/*.test.ts lambda/*.test.ts",
+    "build:lambda": "esbuild lambda/handler.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/index.mjs",
+    "build:web": "vite build",
+    "dev": "vite",
+    "deploy": "npm run build:lambda && sam deploy --template-file infra/template.yaml --stack-name dhoop --capabilities CAPABILITY_IAM --resolve-s3",
+    "logs": "sam logs --stack-name dhoop --name DhoopFunction --tail"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "esbuild": "^0.24.2",
-    "typescript": "^5.9.3"
-  },
-  "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.1149.0"
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4"
   }
 }

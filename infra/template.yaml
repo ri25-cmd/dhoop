@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Dhoop - rooftop solar check against satellite-measured sunlight
+
+Parameters:
+  GridEmissionFactor:
+    Type: String
+    Default: ""
+    Description: All-India average grid emission factor (tCO2/MWh) from the latest CEA CO2 Baseline Database. Leave blank to hide CO2 figures.
+
+Conditions:
+  HasGridEF: !Not [!Equals [!Ref GridEmissionFactor, ""]]
+
+Resources:
+  DhoopFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: dhoop-diagnose
+      CodeUri: ../dist
+      Handler: index.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 15
+      LoggingConfig:
+        LogFormat: Text
+      Environment:
+        Variables:
+          GRID_EF_TCO2_PER_MWH: !If [HasGridEF, !Ref GridEmissionFactor, !Ref AWS::NoValue]
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins: ["*"]
+          AllowMethods: ["POST"]
+          AllowHeaders: ["content-type"]
+          MaxAge: 300
+
+  DhoopLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/dhoop-diagnose
+      RetentionInDays: 14
+
+Outputs:
+  ApiUrl:
+    Description: Paste this into web/.env as VITE_API_URL
+    Value: !GetAtt DhoopFunctionUrl.FunctionUrl
