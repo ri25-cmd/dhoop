@@ -30,6 +30,8 @@ export interface Config {
 
 export interface Irradiation {
   kWhPerM2: number;
+  // Daylight hours (06:00–19:00 IST) that are absent, null, or an implausible 0 at midday.
+  // Any of these undercounts the day's sunlight and inflates PR, so such days are not judged.
   missingDaylightHours: number;
   daylightHours: number;
 }
@@ -39,12 +41,17 @@ const toMin = (hhmm: string) => {
   return h * 60 + m;
 };
 
+// The satellite API returns 0.0 (not null) for hours it has not processed yet. Real irradiance
+// on a panel is never exactly 0 between 09:00 and 15:00 IST anywhere in India, even under
+// monsoon cloud, so a 0 there is treated as missing data rather than darkness.
+const DAY_START_H = 6, DAY_END_H = 19, MIDDAY_START_H = 9, MIDDAY_END_H = 15;
+
 /** Sum plane-of-array irradiation for one local date, optionally only up to readAt. */
 export function irradiationForDate(s: HourlySeries, date: string, readAt?: string): Irradiation {
   const cutoff = readAt ? toMin(readAt) : 24 * 60;
   let wh = 0;
-  let missing = 0;
   let daylight = 0;
+  const goodHours = new Set<number>(); // start hour of each valid daylight value
   for (let i = 0; i < s.time.length; i++) {
     // Each value is the mean of the hour ENDING at its label, so bucket by the hour's start.
     // (A "00:00" label therefore belongs to 23:00–24:00 of the previous day.)
@@ -55,23 +62,28 @@ export function irradiationForDate(s: HourlySeries, date: string, readAt?: strin
     if (start >= cutoff) continue;
     const frac = end <= cutoff ? 1 : (cutoff - start) / 60;
     const v = s.gti[i];
-    if (v === null || v === undefined || Number.isNaN(v)) {
-      if (start >= 6 * 60 && end <= 19 * 60) missing++;
-      continue;
-    }
+    if (v === null || v === undefined || Number.isNaN(v)) continue;
+    const h = start / 60;
+    if (v === 0 && h >= MIDDAY_START_H && h < MIDDAY_END_H) continue; // unprocessed, not dark
+    goodHours.add(h);
     if (v > 0) daylight++;
     wh += v * frac; // W/m² × 1 h = Wh/m²
   }
+  // Count daylight hours (before the cutoff) that have no usable value, including hours the
+  // response did not cover at all.
+  let missing = 0;
+  for (let h = DAY_START_H; h < DAY_END_H; h++) if (h * 60 < cutoff && !goodHours.has(h)) missing++;
   return { kWhPerM2: wh / 1000, missingDaylightHours: missing, daylightHours: daylight };
 }
 
-export type Verdict = "ok" | "watch" | "act" | "insufficient-sun" | "check-inputs";
+export type Verdict = "ok" | "watch" | "act" | "insufficient-sun" | "check-inputs" | "no-data";
 
 export interface DayResult {
   date: string;
   kWh: number;
   irradiation: number; // kWh/m²
   pr: number;
+  excluded?: string; // why this earlier day was left out of the usual level, if it was
 }
 
 export interface Diagnosis {
@@ -86,7 +98,8 @@ export interface Diagnosis {
   recoverableINRperMonth?: number;
   recoverableKgCO2perMonth?: number;
   bar: { bestDayKWh: number; expectedTodayKWh: number; actualKWh: number };
-  history: DayResult[];
+  history: DayResult[]; // earlier days used for the usual level
+  days: DayResult[]; // every day entered, in date order, with exclusion reasons
   confidence: "high" | "medium" | "low";
   notes: string[];
 }
@@ -105,19 +118,37 @@ const percentile = (xs: number[], p: number) => {
  */
 export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]): Diagnosis {
   if (readings.length === 0 || readings.length !== irr.length) throw new Error("readings and irradiation must align");
-  if (!(cfg.kWp > 0)) throw new Error("kWp must be positive");
+  // Reject what can't be judged. A NaN reading would otherwise slip past every comparison below
+  // and come out as "Working as expected".
+  if (!(Number.isFinite(cfg.kWp) && cfg.kWp > 0)) throw new Error("kWp must be a positive number");
+  for (const r of readings) if (!(Number.isFinite(r.kWh) && r.kWh >= 0)) throw new Error(`reading for ${r.date} must be a number of kWh, 0 or more`);
+  for (const x of irr) if (!(Number.isFinite(x.kWhPerM2) && x.kWhPerM2 >= 0)) throw new Error("irradiation must be a number, 0 or more");
   const nominal = cfg.nominalPR ?? 0.8;
   const notes: string[] = [];
 
-  const days: DayResult[] = readings.map((r, i) => ({
-    date: r.date,
-    kWh: r.kWh,
-    irradiation: irr[i].kWhPerM2,
-    pr: irr[i].kWhPerM2 > 0 ? r.kWh / (irr[i].kWhPerM2 * cfg.kWp) : NaN,
-  }));
+  for (let i = 1; i < readings.length; i++) {
+    if (readings[i].date <= readings[i - 1].date) throw new Error("readings must be in date order with no repeated dates");
+  }
+
+  const days: DayResult[] = readings.map((r, i) => {
+    const d: DayResult = {
+      date: r.date,
+      kWh: r.kWh,
+      irradiation: irr[i].kWhPerM2,
+      pr: irr[i].kWhPerM2 > 0 ? r.kWh / (irr[i].kWhPerM2 * cfg.kWp) : NaN,
+    };
+    if (i < readings.length - 1) {
+      if (irr[i].missingDaylightHours > 0) d.excluded = "satellite data incomplete";
+      else if (d.irradiation < 1.5) d.excluded = "too little sunlight";
+      else if (!(d.pr <= 1.05)) d.excluded = "reading higher than the sunlight allows";
+    }
+    return d;
+  });
   const today = days[days.length - 1];
   const todayIrr = irr[irr.length - 1];
-  const history = days.slice(0, -1).filter((d) => d.irradiation >= 1.5 && Number.isFinite(d.pr) && d.pr <= 1.05);
+  const history = days.slice(0, -1).filter((d) => !d.excluded);
+  const excludedCount = days.length - 1 - history.length;
+  if (excludedCount > 0) notes.push(`${excludedCount} earlier day${excludedCount > 1 ? "s were" : " was"} left out of the comparison (see the table).`);
 
   // Baseline: the system's own clean-ish level (75th percentile of recent PR) when we have
   // enough history; otherwise a nominal value, clearly labelled as provisional.
@@ -130,7 +161,8 @@ export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]
     notes.push(`Fewer than 5 earlier days of readings, so the comparison uses a typical performance ratio of ${nominal.toFixed(2)}.`);
   }
 
-  const bestIrr = Math.max(...days.map((d) => d.irradiation));
+  // Only days with complete satellite data can be "the brightest".
+  const bestIrr = Math.max(...days.filter((d, i) => irr[i].missingDaylightHours === 0).map((d) => d.irradiation), 0);
   const sunlightBelowBestPct = bestIrr > 0 ? Math.max(0, 1 - today.irradiation / bestIrr) : 0;
   const expectedToday = today.irradiation * cfg.kWp * baselinePR;
   const bar = {
@@ -146,9 +178,13 @@ export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]
     sunlightBelowBestPct,
     bar,
     history,
+    days,
   };
 
-  // Guards before any verdict.
+  // Guards before any verdict. Missing data first: an incomplete day looks dark, but isn't.
+  if (todayIrr.missingDaylightHours > 0) {
+    return { ...base, verdict: "no-data", reason: `Satellite sunlight for this day is incomplete (${todayIrr.missingDaylightHours} daylight hour${todayIrr.missingDaylightHours > 1 ? "s" : ""} missing), so Dhoop can't judge it. This is a data gap, not a sign of a problem with your system.`, systemLossPct: 0, recoverableKWhToday: 0, confidence: "low", notes };
+  }
   if (today.irradiation < 1.5) {
     return { ...base, verdict: "insufficient-sun", reason: "Too little sunlight on this day to judge the system.", systemLossPct: 0, recoverableKWhToday: 0, confidence: "low", notes };
   }
@@ -173,17 +209,13 @@ export function diagnose(cfg: Config, readings: DayReading[], irr: Irradiation[]
         ? "Output is a little below your usual level for the sunlight available. This can be normal variation. Check again after a few more days."
         : "Output is clearly below what the available sunlight would normally produce. This is possible system underperformance. Check for dirt, new shade or an inverter fault, or ask your installer to inspect it.";
 
-  let confidence: Diagnosis["confidence"] = baselineSource === "history" ? "high" : "medium";
-  if (todayIrr.missingDaylightHours > 2) {
-    confidence = "low";
-    notes.push("Some satellite hours were missing today.");
-  }
+  const confidence: Diagnosis["confidence"] = baselineSource === "history" ? "high" : "medium";
   if (readings[readings.length - 1].readAt) notes.push(`Compared against satellite sunlight up to ${readings[readings.length - 1].readAt}.`);
 
   notes.push("Satellite sunlight is an estimate for a ~5 km area. Local shade, panel temperature, orientation and system differences are not captured, so small differences are within normal uncertainty.");
   const monthKWh = recoverableKWhToday * 30;
   const out: Diagnosis = { ...base, verdict, reason, systemLossPct, recoverableKWhToday, confidence, notes };
-  if (cfg.tariffINRperKWh) out.recoverableINRperMonth = monthKWh * cfg.tariffINRperKWh;
-  if (cfg.gridEF_tCO2perMWh) out.recoverableKgCO2perMonth = monthKWh * cfg.gridEF_tCO2perMWh; // t/MWh == kg/kWh
+  if (cfg.tariffINRperKWh && cfg.tariffINRperKWh > 0) out.recoverableINRperMonth = monthKWh * cfg.tariffINRperKWh;
+  if (cfg.gridEF_tCO2perMWh && cfg.gridEF_tCO2perMWh > 0) out.recoverableKgCO2perMonth = monthKWh * cfg.gridEF_tCO2perMWh; // t/MWh == kg/kWh
   return out;
 }

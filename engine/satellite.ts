@@ -19,10 +19,17 @@ export async function fetchSatellite(lat: number, lon: number, tilt: number, azi
     timezone: "Asia/Kolkata",
   }).toString();
   const t0 = Date.now();
-  const r = await fetch(u);
+  let r: Response;
+  try {
+    r = await fetch(u, { signal: AbortSignal.timeout(10_000) });
+  } catch {
+    throw new Error("Satellite API did not respond");
+  }
   if (!r.ok) throw new Error(`Satellite API returned ${r.status}`);
   const data = await r.json();
   if (data?.utc_offset_seconds !== 19800) throw new Error("Unexpected timezone in satellite response");
+  if (!Array.isArray(data.hourly?.time) || !Array.isArray(data.hourly?.global_tilted_irradiance)) throw new Error("Satellite response had no hourly data");
+  if (data.hourly_units?.global_tilted_irradiance !== "W/m²") throw new Error("Unexpected units in satellite response");
   const series: HourlySeries = { time: data.hourly.time, gti: data.hourly.global_tilted_irradiance };
   return {
     series,

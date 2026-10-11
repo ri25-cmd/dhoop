@@ -62,3 +62,54 @@ test("satellite outage returns a clear error, not a fake diagnosis", async () =>
   assert.equal(out.statusCode, 502);
   assert.match(JSON.parse(out.body).error, /satellite/i);
 });
+
+test("rejects repeated dates, impossible dates and bad angles; ignores a junk tariff", async () => {
+  stubSatellite();
+  const base = { lat: 28.61, lon: 77.21, kWp: 3 };
+  assert.equal((await call({ ...base, readings: [{ date: "2026-10-09", kWh: 5 }, { date: "2026-10-09", kWh: 6 }] })).statusCode, 400);
+  assert.equal((await call({ ...base, readings: [{ date: "2026-02-31", kWh: 5 }] })).statusCode, 400);
+  assert.equal((await call({ ...base, tilt: 120, readings: [{ date: "2026-10-10", kWh: 9 }] })).statusCode, 400);
+  const ok = await call({ ...base, tariff: "lots", readings: [{ date: "2026-10-10", kWh: 9 }] });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(JSON.parse(ok.body).result.recoverableINRperMonth, undefined);
+});
+
+test("satellite API that times out returns 502", async () => {
+  globalThis.fetch = (async () => { throw new DOMException("timeout", "TimeoutError"); }) as typeof fetch;
+  const out = await call({ lat: 28.61, lon: 77.21, kWp: 3, readings: [{ date: "2026-10-10", kWh: 9 }] });
+  assert.equal(out.statusCode, 502);
+});
+
+test("a bad reading is rejected, not silently dropped (which would judge a different day)", async () => {
+  stubSatellite();
+  const base = { lat: 28.61, lon: 77.21, kWp: 3 };
+  for (const kWh of ["9.6", -2, null]) {
+    const out = await call({ ...base, readings: [{ date: "2026-10-09", kWh: 11.8 }, { date: "2026-10-10", kWh }] });
+    assert.equal(out.statusCode, 400, `kWh ${kWh}`);
+  }
+  assert.equal((await call({ ...base, kWp: 0, readings: [{ date: "2026-10-10", kWh: 9 }] })).statusCode, 400);
+  assert.equal((await call({ ...base, readings: "lots" })).statusCode, 400);
+});
+
+test("malformed satellite responses (wrong units, no hourly data) return 502, not a diagnosis", async () => {
+  for (const body of [
+    { utc_offset_seconds: 19800, hourly_units: { global_tilted_irradiance: "kWh/m²" }, hourly: { time: [], global_tilted_irradiance: [] } },
+    { utc_offset_seconds: 19800, hourly_units: { global_tilted_irradiance: "W/m²" } },
+    { utc_offset_seconds: 0, hourly_units: { global_tilted_irradiance: "W/m²" }, hourly: { time: [], global_tilted_irradiance: [] } },
+  ]) {
+    globalThis.fetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const out = await call({ lat: 28.61, lon: 77.21, kWp: 3, readings: [{ date: "2026-10-10", kWh: 9 }] });
+    assert.equal(out.statusCode, 502);
+  }
+});
+
+test("the response states where the sunlight came from and which hours were used", async () => {
+  stubSatellite();
+  const out = await call({ lat: 28.61, lon: 77.21, kWp: 3, readings: [{ date: "2026-10-10", kWh: 9 }] });
+  const { sunlight } = JSON.parse(out.body);
+  assert.match(sunlight.source, /Open-Meteo.*Himawari/);
+  assert.equal(sunlight.first, delhiTilted.time[0]);
+  assert.equal(sunlight.last, delhiTilted.time.at(-1));
+  assert.equal(sunlight.hours, delhiTilted.time.length);
+  assert.ok(!Number.isNaN(Date.parse(sunlight.retrievedAt)));
+});

@@ -21,12 +21,20 @@ export async function handler(event: { body?: string; isBase64Encoded?: boolean;
     const { lat, lon, kWp } = req;
     if (![lat, lon, kWp].every((x) => typeof x === "number" && Number.isFinite(x))) return res(400, { error: "lat, lon and kWp must be numbers" });
     if (lat < 6 || lat > 37 || lon < 68 || lon > 98) return res(400, { error: "Location must be in India" });
+    if (kWp <= 0 || kWp > 1000) return res(400, { error: "System size must be between 0 and 1000 kW" });
 
-    const readings: DayReading[] = (Array.isArray(req.readings) ? req.readings : [])
-      .filter((r: DayReading) => /^\d{4}-\d{2}-\d{2}$/.test(r?.date) && typeof r.kWh === "number" && r.kWh >= 0)
+    const isRealDate = (s: unknown) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(s + "T00:00:00Z").toISOString().startsWith(s);
+    // Reject a bad reading rather than drop it: dropping the latest day would quietly judge an
+    // earlier one instead.
+    if (!Array.isArray(req.readings)) return res(400, { error: "readings must be a list of { date, kWh }" });
+    const bad = req.readings.find((r: DayReading) => !isRealDate(r?.date) || typeof r.kWh !== "number" || !Number.isFinite(r.kWh) || r.kWh < 0);
+    if (bad) return res(400, { error: `Each reading needs a real date (YYYY-MM-DD) and a kWh value of 0 or more (got ${JSON.stringify(bad).slice(0, 80)})` });
+    const readings: DayReading[] = req.readings
       .map((r: DayReading) => ({ date: r.date, kWh: r.kWh }))
       .sort((a: DayReading, b: DayReading) => a.date.localeCompare(b.date));
     if (readings.length === 0) return res(400, { error: "Enter at least one day's reading" });
+    if (new Set(readings.map((r) => r.date)).size !== readings.length) return res(400, { error: "Each date can only be entered once" });
+    const tariff = typeof req.tariff === "number" && Number.isFinite(req.tariff) && req.tariff > 0 ? req.tariff : undefined;
     const today = todayIST();
     if (readings.some((r) => r.date >= today)) return res(400, { error: "Use completed days only (yesterday or earlier)" });
 
@@ -35,11 +43,12 @@ export async function handler(event: { body?: string; isBase64Encoded?: boolean;
 
     const tilt = typeof req.tilt === "number" ? req.tilt : 25;
     const azimuth = typeof req.azimuth === "number" ? req.azimuth : 0;
+    if (!(tilt >= 0 && tilt <= 90) || !(azimuth >= -180 && azimuth <= 180)) return res(400, { error: "Tilt must be 0–90° and azimuth −180–180°" });
     const { series, grid, meta } = await fetchSatellite(lat, lon, tilt, azimuth, daysBack + 1);
     log("satellite-fetched", { gridLat: grid.lat, gridLon: grid.lon, ...meta });
     const irr = readings.map((r) => irradiationForDate(series, r.date));
 
-    const result = diagnose({ kWp, tariffINRperKWh: req.tariff, gridEF_tCO2perMWh: GRID_EF }, readings, irr);
+    const result = diagnose({ kWp, tariffINRperKWh: tariff, gridEF_tCO2perMWh: GRID_EF }, readings, irr);
     log("diagnosis", {
       kWp,
       tilt,
@@ -50,8 +59,11 @@ export async function handler(event: { body?: string; isBase64Encoded?: boolean;
       baselinePR: Number(result.baselinePR.toFixed(3)),
       latestPR: Number(result.today.pr.toFixed(3)),
       latestIrradiation: Number(result.today.irradiation.toFixed(2)),
+      missingDaylightHours: irr.map((x) => x.missingDaylightHours),
     });
-    return res(200, { result, grid, source: SOURCE, tilt, azimuth });
+    // Provenance: which satellite hours were used and when, so the page can show it.
+    const sunlight = { source: SOURCE, grid, first: meta.first, last: meta.last, hours: meta.hours, retrievedAt: new Date().toISOString() };
+    return res(200, { result, grid, source: SOURCE, sunlight, tilt, azimuth });
   } catch (e) {
     console.error(JSON.stringify({ msg: "error", error: (e as Error).message }));
     return res(502, { error: "Couldn't get satellite sunlight data right now. Try again shortly." });
