@@ -34,9 +34,9 @@ document.querySelector("#app")!.innerHTML = `
 <div id="home">
   <section class="hero wrap" id="top" aria-labelledby="hero-title">
     <div class="hero-copy">
-      <p class="eyebrow">Rooftop solar check · India</p>
+      <p class="eyebrow">For rooftop solar owners · India</p>
       <h1 id="hero-title">Is your solar producing what the sunlight allows?</h1>
-      <p class="lede">Enter a week of daily readings from your inverter. Dhoop sets each day against the sunlight a satellite estimates reached your roof, and tells you plainly when output falls clearly short of what that sunlight allowed.</p>
+      <p class="lede">Dust, new shade and inverter faults quietly cut a rooftop's clean energy, and on a hazy week an owner can't tell a fault from the weather. Enter a week of daily readings from your inverter. Dhoop sets each day against the sunlight a satellite estimates reached your roof, and tells you plainly when output falls clearly short of what that sunlight allowed.</p>
       <div class="hero-actions">
         <a class="btn btn-primary btn-lg" href="#check" id="cta">Check my solar performance</a>
         <button type="button" class="text-link" id="demo-hero">Explore a sample week <span aria-hidden="true">→</span></button>
@@ -243,6 +243,8 @@ const syncLoc = () => {
 };
 city.addEventListener("change", syncLoc);
 for (const id of ["#lat", "#lon"]) $<HTMLInputElement>(id).addEventListener("input", syncParts);
+// Browsers only allow location on HTTPS (or localhost); on a plain-HTTP page the button can't work.
+$<HTMLButtonElement>("#geo").hidden = !window.isSecureContext;
 $<HTMLButtonElement>("#geo").addEventListener("click", () => {
   navigator.geolocation?.getCurrentPosition(
     (p) => {

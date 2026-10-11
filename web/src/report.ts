@@ -96,7 +96,7 @@ export function renderReport(el: HTMLElement, o: Outcome, tariff?: number) {
     ? `<div class="source-band" role="note"><span class="src-tag">Simulated</span><p><strong>Simulated sample week.</strong> These readings and this sunlight are made up to show how Dhoop works. They are not measurements from any real installation.</p></div>`
     : o.demoInputs
       ? `<div class="source-band" role="note"><span class="src-tag">Not a real result</span><p><strong>Includes sample values.</strong> Some readings or the system size are still from the simulated sample, checked against real satellite sunlight.</p></div>`
-      : "";
+      : `<div class="source-band source-real" role="note"><span class="src-tag">Live satellite data</span><p><strong>Real sunlight, your readings.</strong> Each day's sunlight was fetched just now from the Himawari satellite via Open-Meteo. The generation readings are the ones you entered. Expected output and any shortfall are Dhoop's estimates.</p></div>`;
   const pathNote =
     o.path === "aws" ? "Computed on AWS Lambda"
     : o.path === "browser" ? `Computed in your browser (${o.fallbackReason})`

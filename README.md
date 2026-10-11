@@ -8,10 +8,16 @@ Dhoop compares each day's inverter reading with a **satellite estimate of the su
 
 Built for the WeMakeDevs × AWS Bharat Builds Tour, Environmental Hacks: Waste & Energy track (rooftop solar).
 
+**Live app (hosted on Amazon S3):** http://dhoop-riddhi-demo-2026.s3-website-ap-southeast-2.amazonaws.com/
+
+**Who it's for:** a household or small business in India with a rooftop solar system and an inverter app or display showing daily kWh, but no monitoring service and no way to tell a hazy week from a dirty or faulty system.
+
+**What changes for them:** instead of guessing, they get a plain verdict (working as expected, slightly below usual, or possible underperformance) plus what to check first. A system that is quietly losing output to dust, new shade or a fault gets noticed and fixed sooner, so more of the clean electricity it was installed to produce actually gets used. We have not measured this effect with real owners yet (see Limitations).
+
 ## How it works
 
 1. The owner enters their city, system size and the last 7 days of daily kWh from the inverter app or display.
-2. The diagnosis engine (designed to run on AWS Lambda; see deployment status below, it currently runs in the browser) fetches hourly sunlight on the panels' plane (global tilted irradiance) for that location from the Open-Meteo Satellite Radiation API. Over India this comes from the JMA/JAXA Himawari satellite.
+2. The diagnosis engine (in the live app it runs in the browser; it is also packaged for AWS Lambda, which is not yet deployed, see AWS below) fetches hourly sunlight on the panels' plane (global tilted irradiance) for that location from the Open-Meteo Satellite Radiation API. Over India this comes from the JMA/JAXA Himawari satellite.
 3. For each day it computes a **performance ratio**:
 
    ```
@@ -41,35 +47,39 @@ A real API response for Delhi (8–10 Oct 2026, 28° south tilt) is stored as a 
 
 ## Demo flow
 
-1. `npm run dev`, then open http://localhost:5173/.
+1. Open the [live app](http://dhoop-riddhi-demo-2026.s3-website-ap-southeast-2.amazonaws.com/), or run `npm run dev` and open http://localhost:5173/.
 2. **Sample week (works offline):** click "Explore a sample week". A simulated 3 kW system with simulated sunlight opens as a report: "Possible underperformance", 80% of expected. Every figure, the legend and the banner say "Simulated", and the source line reads "Sunlight: simulated for this sample, not satellite data. Readings: simulated."
-3. **Real sunlight:** "← Edit readings", "clear the form", enter a capacity and up to seven daily kWh readings, then "Check against satellite sunlight". The report's source line names the satellite source, grid cell, days summed and fetch time, and says the readings were entered by you. If the satellite API fails, the app shows an error and no result; it never substitutes made-up sunlight.
+3. **Real sunlight:** "← Edit readings", "clear the form", enter a capacity and up to seven daily kWh readings, then "Check against satellite sunlight". The report opens with a green "Live satellite data" band, and its source line names the satellite source, grid cell, days summed and fetch time, and says the readings were entered by you. If the satellite API fails, the app shows an error and no result; it never substitutes made-up sunlight.
 
 ## Architecture
 
+What runs today (live):
+
 ```
+Amazon S3 static website hosting (ap-southeast-2)
+  │  serves index.html + JS/CSS bundle (dist-web/)
+  ▼
 Browser (Vite + TypeScript)
-  │  POST {location, kWp, 7 daily kWh}
+  │  GET hourly tilted irradiance for the location
   ▼
-AWS Lambda Function URL ──► Open-Meteo Satellite Radiation API (hourly W/m², IST)
-  │  engine/diagnose.ts: hourly → daily kWh/m² → performance ratio → verdict
+Open-Meteo Satellite Radiation API (JMA/JAXA Himawari, hourly W/m², IST)
+  │  engine/diagnose.ts, in the browser: hourly → daily kWh/m² → performance ratio → verdict
   ▼
-JSON result ──► browser renders verdict, 7-day expected-vs-actual chart, threshold scale
+Verdict, 7-day expected-vs-actual chart, threshold scale
 ```
 
-The browser bundles the same `engine/` code. If no Lambda URL is configured or the Lambda can't be reached, it calls Open-Meteo directly and computes the same result locally.
+Planned, built and tested but not deployed: the browser POSTs the readings to an AWS Lambda Function URL, which fetches the satellite data and runs the same `engine/` code, logging each request to CloudWatch. The web app already supports this: set `VITE_API_URL` and it uses the Lambda first, falling back to the browser if it can't be reached.
 
 ## AWS
 
-| Service | Role | How it's created |
+| Service | Role | Status |
 |---|---|---|
-| **AWS Lambda** (Node.js 22, arm64) | Fetches satellite data, runs the diagnosis | SAM template |
-| **Lambda Function URL** | Public HTTPS endpoint with CORS | SAM template |
-| **Amazon CloudWatch Logs** | Structured log per request: satellite grid cell, hours, missing hours, verdict, PR | SAM template (14-day retention) |
-| **AWS Amplify Hosting** | Hosts the static web app (`dist-web/`) | Manual, in the Amplify console |
-| **AWS SAM** (open source) | Infrastructure as code: `infra/template.yaml` | n/a |
+| **Amazon S3** (static website hosting, ap-southeast-2) | Hosts the production web app (`dist-web/`) | **Live** |
+| **AWS Lambda** (Node.js 22, arm64) + **Function URL** | Fetches satellite data and runs the diagnosis server-side | Built and tested, **not deployed** |
+| **Amazon CloudWatch Logs** | Structured log per request: satellite grid cell, hours, missing hours, verdict, PR | Defined in SAM, **not deployed** |
+| **AWS SAM** (open source) | Infrastructure as code for the Lambda: `infra/template.yaml` | Template ready |
 
-**Deployment status (11 Oct 2026): not deployed.** The Lambda code, SAM template and bundle are complete and tested locally: the built `dist/index.mjs` was invoked with a Function URL-style event against the live Open-Meteo API and returned a diagnosis. Deploying from the team's AWS account was blocked by an AWS Organizations service control policy that denies the CloudFormation and Lambda actions. Until it is deployed, the web app computes in the browser and says so on every result.
+**Lambda status (11 Oct 2026): not deployed.** The Lambda code, SAM template and bundle are complete and tested locally: the built `dist/index.mjs` was invoked with a Function URL-style event against the live Open-Meteo API and returned a diagnosis. Deploying from the team's AWS account was blocked by an AWS Organizations service control policy that denies the CloudFormation and Lambda actions. So the live app computes in the browser and says so on every result ("Computed in your browser (AWS endpoint not configured)").
 
 If the Lambda can't be reached, the web app runs the same engine in the browser and labels the result "Computed in your browser". If satellite data is unavailable, it shows an error and no result for real readings, and offers the offline demo instead.
 
@@ -110,12 +120,23 @@ Without `web/.env`, the app computes in the browser and labels results "Computed
 
 ## Deploy
 
+### Web app to Amazon S3 (what the live app uses)
+
+```bash
+npm run build:web
+aws s3 sync dist-web/ s3://dhoop-riddhi-demo-2026/ --delete
+```
+
+The bucket has static website hosting enabled with `index.html` as the index document and a public-read bucket policy. Without the AWS CLI, upload the contents of `dist-web/` (`index.html` and the `assets/` folder) in the S3 console.
+
+### Lambda backend (not yet deployed, see AWS above)
+
 ```bash
 npm run build:lambda
 sam deploy --template-file infra/template.yaml --stack-name dhoop \
   --capabilities CAPABILITY_IAM --resolve-s3 --region ap-south-1
 # copy the ApiUrl output into web/.env as VITE_API_URL, then:
-npm run build:web  # upload dist-web/ to Amplify Hosting
+npm run build:web  # then upload dist-web/ to S3 as above
 ```
 
 ## Project layout

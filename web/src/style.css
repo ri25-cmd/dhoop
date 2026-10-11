@@ -224,6 +224,9 @@ button { font: inherit; cursor: pointer; color: inherit; }
 .source-band { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s3) var(--s4); background: var(--sun-soft); border-left: 4px solid var(--sun); border-radius: var(--r); font-size: 0.95rem; color: var(--ink); }
 .src-tag { flex: none; font-size: 0.8rem; font-weight: 700; background: var(--sun); color: #173d2e; border-radius: 6px; padding: 2px 8px; margin-top: 1px; }
 .tool-form > .source-band { margin-bottom: var(--s5); }
+/* real satellite sunlight: the green counterpart of the yellow "Simulated" band */
+.source-real { background: color-mix(in srgb, var(--made) 22%, var(--paper)); border-left-color: var(--forest); }
+.source-real .src-tag { background: var(--forest); color: var(--paper); }
 
 .part { border: 0; padding: 0; min-width: 0; }
 .part + .part { margin-top: var(--s6); padding-top: var(--s6); border-top: 1px solid var(--line); }

@@ -1,44 +1,46 @@
 # Dhoop: submission writeup
 
 **Track:** Waste & Energy (rooftop solar)
-**Live app:** not deployed (see "Where AWS fits"); run locally with `npm run dev`
-**Repo:** [ADD GITHUB URL]
+**Live app (Amazon S3):** http://dhoop-riddhi-demo-2026.s3-website-ap-southeast-2.amazonaws.com/
+**Repo:** https://github.com/ri25-cmd/dhoop
 **Demo video:** [ADD YOUTUBE URL]
 
-## The problem
+**In one line:** Dhoop tells a rooftop solar owner whether a low day was the weather or their system, by checking each day's inverter reading against satellite-measured sunlight for their roof.
 
-Rooftop solar is spreading quickly across India, including under the PM Surya Ghar scheme. Every system loses output over time to dust, bird droppings, new shade and inverter faults, and in October that coincides with haze across the north. An owner looking at a lower number on the inverter can't tell whether it was a hazy week or a problem with the system, so most never check. Clean electricity that was already paid for is quietly lost.
+## Idea and impact
 
-## What we built
+**The problem.** Rooftop solar is spreading quickly across India, including under PM Surya Ghar. Systems quietly lose output to dust, bird droppings, new shade and inverter faults. In October that overlaps with haze across the north, so when the inverter shows a lower number, the owner can't tell whether the sky gave less sunlight or the system is underperforming. Most never check, and clean electricity the system was installed to produce is lost without anyone noticing.
 
-Dhoop is a mobile-first web app. The owner enters their city, system size and the last 7 days of daily kWh from their inverter. Dhoop fetches a satellite estimate of the sunlight that reached that roof (Open-Meteo, from the JMA/JAXA Himawari satellite), and computes a performance ratio for each day: energy produced divided by the sunlight available. Because the satellite figure already includes clouds and haze, a drop in this ratio points at the system rather than the weather.
+**Who it's for.** Households and small businesses with a rooftop system and an inverter app or display showing daily kWh, but no paid monitoring service.
 
-The result shows:
-- a verdict: working as expected, slightly below usual, or possible underperformance
-- the latest day's measured output next to what its sunlight should have produced, and the possible shortfall as an estimate
-- a 7-day chart of measured output against expected output, with hover and keyboard details for each day
-- a scale showing output as a share of expected, with the 8% and 15% thresholds drawn, so the owner can see why a day was or wasn't flagged
-- a table of each day's reading, sunlight and performance ratio, showing which days formed the usual level
-- practical next steps: check for dirt, shade or inverter faults
+**What changes for them.** Instead of guessing, the owner gets a plain verdict (working as expected, slightly below usual, or possible underperformance), the size of the possible shortfall, and a short, safe list of what to check first. The key point is that Dhoop separates weather from the system: a hazy week lowers the sunlight, and Dhoop accounts for that, so it doesn't raise a false alarm. A real drop beyond what the sunlight explains is flagged.
 
-We were careful about what the app claims. It never names a cause, never attributes losses to smog, flags a day only when it is clearly outside normal uncertainty, and accepts only completed days. We validated units and timestamps against a real API response for Delhi; it is stored as a test fixture. Each result states where its sunlight came from (satellite grid cell, days summed, time fetched), and the built-in sample week is labelled as simulated everywhere it appears.
+**What we don't claim.** We haven't piloted Dhoop with real owners, so we claim no measured energy savings, CO₂ reduction or detection accuracy. The ₹ figure is labelled as an estimate if the shortfall continued.
 
-## Where AWS fits
+## Built on AWS
 
-Designed for, and implemented as:
-- **AWS Lambda** with a **Function URL** to run the diagnosis: it fetches satellite sunlight for the location and computes the result (`lambda/handler.ts`).
-- **Amazon CloudWatch Logs** to record each request: the satellite grid cell, hours returned, missing hours, and the verdict with its performance ratios.
-- **AWS SAM** to define the infrastructure (`infra/template.yaml`), and **AWS Amplify Hosting** to serve the web app.
+- **Amazon S3 static website hosting (live):** the production web app is served from an S3 bucket in ap-southeast-2 at the URL above.
+- **AWS Lambda + Function URL, Amazon CloudWatch Logs, AWS SAM (built, not deployed):** `lambda/handler.ts` runs the same diagnosis engine server-side, and `infra/template.yaml` defines the function, its public HTTPS URL and a log group that records each request's satellite grid cell, hours and verdict. The handler has automated tests, and the built bundle was invoked locally with a Function URL-style event against the live satellite API.
+- **Why the Lambda isn't live:** deployment from our AWS account was blocked by an AWS Organizations service control policy that denies the CloudFormation and Lambda actions. The web app already supports the Lambda (`VITE_API_URL`). Until then it runs the same engine in the browser and labels every result "Computed in your browser (AWS endpoint not configured)".
 
-**Status: not deployed.** Deployment from our AWS account was blocked: an AWS Organizations service control policy explicitly denies the CloudFormation and Lambda actions. What we verified instead: the Lambda handler has automated tests (validation, satellite failures, provenance), and the built bundle (`dist/index.mjs`) was invoked locally with a Function URL-style event against the live Open-Meteo API and returned a diagnosis. Until it is deployed, the web app runs the same engine in the browser and labels every result "Computed in your browser (AWS endpoint not configured)".
+## Design and usability
 
-## Impact
+- Two short steps: system details (city, size; tilt and direction have sensible defaults), then seven daily kWh readings. Pasting seven numbers fills the week.
+- The report leads with one sentence verdict and a single bar: what was made against what the sunlight allowed, with any shortfall hatched.
+- A 7-day chart, a "why it was flagged" scale with the thresholds drawn, and numbered next steps that start with the cheapest, safest check.
+- Every report says where its data came from: a green "Live satellite data" band for real checks, a yellow "Simulated" band for the sample week, and a source line with the satellite grid cell, dates and fetch time.
+- Works on phones (tested at 375px wide) and with a keyboard. A sample week runs offline so anyone can try it in one click.
 
-Dhoop has not been piloted with real owners yet, so we make no claim of measured savings. What it is designed to do: prompt an owner to check a system when a loss would otherwise go unnoticed. The app reports the possible shortfall in kWh and, with the owner's tariff, in rupees per month if it continues. We report a CO₂ figure only when a verified grid emission factor is configured.
+## Execution
+
+- **Works end-to-end on the live site:** the normal check fetches real hourly Himawari sunlight from Open-Meteo for the chosen location and computes the verdict in the browser.
+- **The method:** performance ratio = energy produced ÷ (sunlight on the panels × system size). Satellite sunlight already includes clouds and haze, so the ratio normalises for the weather. The latest day is compared with the system's own usual level (75th percentile of the earlier days); it is flagged beyond 8% (watch) or 15% (act) below. These thresholds are our judgement.
+- **Guards:** days with missing satellite hours are never judged, only completed days are accepted, impossible readings are rejected, and if the satellite API fails the app shows an error rather than a guess.
+- **Checked against real data:** units and timestamps were validated against a stored real API response for Delhi. 29 automated tests cover the engine, the real-data fixture, chart/engine consistency and the Lambda handler.
 
 ## Limitations
 
-Satellite sunlight is an estimate for a ~5 km cell. Local shade, panel temperature, true orientation and system differences are not captured. The 8% and 15% thresholds are our judgement. The app needs a few days of the owner's readings to compare against their own usual level; with fewer, it falls back to a typical ratio of 0.80 and says so. Days with incomplete satellite data are never judged; the app says the data is missing rather than guessing.
+Satellite sunlight is an estimate for a ~5 km cell; local shade, panel temperature, true orientation and system differences aren't captured. The thresholds are our judgement, not a published standard. With fewer than five usable earlier days, the app compares against a typical ratio of 0.80 and says so. It can't name the cause of a drop. The live site is plain HTTP, so "Use my current location" is hidden there (browsers allow location only on HTTPS).
 
 ## AI tools used
 
