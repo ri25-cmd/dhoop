@@ -17,7 +17,7 @@ Built for the WeMakeDevs × AWS Bharat Builds Tour, Environmental Hacks: Waste &
 ## How it works
 
 1. The owner enters their city, system size and the last 7 days of daily kWh from the inverter app or display.
-2. The diagnosis engine (in the live app it runs in the browser; it is also packaged for AWS Lambda, which is not yet deployed, see AWS below) fetches hourly sunlight on the panels' plane (global tilted irradiance) for that location from the Open-Meteo Satellite Radiation API. Over India this comes from the JMA/JAXA Himawari satellite.
+2. The diagnosis engine (in the live app it runs on AWS Lambda, with the same code in the browser as a labelled fallback, see AWS below) fetches hourly sunlight on the panels' plane (global tilted irradiance) for that location from the Open-Meteo Satellite Radiation API. Over India this comes from the JMA/JAXA Himawari satellite.
 3. For each day it computes a **performance ratio**:
 
    ```
@@ -60,26 +60,35 @@ Amazon S3 static website hosting (ap-southeast-2)
   │  serves index.html + JS/CSS bundle (dist-web/)
   ▼
 Browser (Vite + TypeScript)
-  │  GET hourly tilted irradiance for the location
+  │  POST {location, kWp, tilt, direction, 7 daily kWh}
   ▼
-Open-Meteo Satellite Radiation API (JMA/JAXA Himawari, hourly W/m², IST)
-  │  engine/diagnose.ts, in the browser: hourly → daily kWh/m² → performance ratio → verdict
+AWS Lambda Function URL (ap-southeast-2) ──► Open-Meteo Satellite Radiation API
+  │  engine/diagnose.ts:                       (JMA/JAXA Himawari, hourly W/m², IST)
+  │  hourly → daily kWh/m² → performance ratio → verdict
+  │  structured log per request ──► Amazon CloudWatch Logs
   ▼
-Verdict, 7-day expected-vs-actual chart, threshold scale
+JSON → browser renders verdict, 7-day expected-vs-actual chart, threshold scale
+
+Fallback if the Lambda can't be reached: the browser calls Open-Meteo itself and
+runs the same engine/ code, labelled "Computed in your browser".
 ```
 
-Planned, built and tested but not deployed: the browser POSTs the readings to an AWS Lambda Function URL, which fetches the satellite data and runs the same `engine/` code, logging each request to CloudWatch. The web app already supports this: set `VITE_API_URL` and it uses the Lambda first, falling back to the browser if it can't be reached.
+In the live build the diagnosis runs on AWS Lambda: the browser POSTs the readings to the Lambda Function URL (set at build time through `VITE_API_URL`), which fetches the satellite data, runs the same `engine/` code and logs each request to CloudWatch. If the Lambda can't be reached, the browser calls Open-Meteo directly and runs the same code itself, as in the diagram above, and labels the result.
 
 ## AWS
 
 | Service | Role | Status |
 |---|---|---|
 | **Amazon S3** (static website hosting, ap-southeast-2) | Hosts the production web app (`dist-web/`) | **Live** |
-| **AWS Lambda** (Node.js 22, arm64) + **Function URL** | Fetches satellite data and runs the diagnosis server-side | Built and tested, **not deployed** |
-| **Amazon CloudWatch Logs** | Structured log per request: satellite grid cell, hours, missing hours, verdict, PR | Defined in SAM, **not deployed** |
-| **AWS SAM** (open source) | Infrastructure as code for the Lambda: `infra/template.yaml` | Template ready |
+| **AWS Lambda** + **Function URL** (ap-southeast-2) | Fetches satellite data and runs the diagnosis for every real check | **Live** |
+| **Amazon CloudWatch Logs** | Structured log per request: satellite grid cell, hours, missing hours, verdict, PR | Written by the Lambda handler on each check |
+| **AWS SAM** (open source) | Infrastructure as code for the Lambda: `infra/template.yaml` | Template ready; not used for the current deployment (see below) |
 
-**Lambda status (11 Oct 2026): not deployed.** The Lambda code, SAM template and bundle are complete and tested locally: the built `dist/index.mjs` was invoked with a Function URL-style event against the live Open-Meteo API and returned a diagnosis. Deploying from the team's AWS account was blocked by an AWS Organizations service control policy that denies the CloudFormation and Lambda actions. So the live app computes in the browser and says so on every result ("Computed in your browser (AWS endpoint not configured)").
+**Lambda status (11 Oct 2026): live.**
+- The function `dhoop-diagnose` runs in **ap-southeast-2 (Sydney)** behind a public Function URL (auth type NONE, CORS allowing POST). The live web app sends each real check to it; the report header says "Computed on AWS Lambda".
+- Verified on 11 Oct 2026: the CORS preflight returns 200 with `Access-Control-Allow-Origin: *`; a POST for Delhi with seven readings returns 200 with the full diagnosis and satellite provenance in about 3–5 s; a location outside India returns 400 from the handler's validation. In a browser, the app made the Lambda call and no direct satellite call.
+- It was created in the Lambda console from the handler bundle, not through the SAM template: an earlier `sam deploy` to ap-south-1 (Mumbai) was blocked by an AWS Organizations service control policy that denies the CloudFormation and Lambda actions.
+- If the Lambda can't be reached, the app runs the same `engine/` code in the browser and labels the result "Computed in your browser (AWS service unreachable)".
 
 If the Lambda can't be reached, the web app runs the same engine in the browser and labels the result "Computed in your browser". If satellite data is unavailable, it shows an error and no result for real readings, and offers the offline demo instead.
 
@@ -129,7 +138,9 @@ aws s3 sync dist-web/ s3://dhoop-riddhi-demo-2026/ --delete
 
 The bucket has static website hosting enabled with `index.html` as the index document and a public-read bucket policy. Without the AWS CLI, upload the contents of `dist-web/` (`index.html` and the `assets/` folder) in the S3 console.
 
-### Lambda backend (not yet deployed, see AWS above)
+### Lambda backend (see AWS above for its current status)
+
+The current function was created in the Lambda console (ap-southeast-2) from the handler bundle, with a Function URL using auth type NONE. To recreate it: upload a zip of `dist/index.mjs` (handler `index.handler`), set the timeout to 15 s, and add a Function URL with auth type NONE and CORS allowing POST with `content-type`. Where CloudFormation is allowed, the SAM template does this in one step:
 
 ```bash
 npm run build:lambda

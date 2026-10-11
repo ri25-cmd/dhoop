@@ -20,8 +20,10 @@
 ## Built on AWS
 
 - **Amazon S3 static website hosting (live):** the production web app is served from an S3 bucket in ap-southeast-2 at the URL above.
-- **AWS Lambda + Function URL, Amazon CloudWatch Logs, AWS SAM (built, not deployed):** `lambda/handler.ts` runs the same diagnosis engine server-side, and `infra/template.yaml` defines the function, its public HTTPS URL and a log group that records each request's satellite grid cell, hours and verdict. The handler has automated tests, and the built bundle was invoked locally with a Function URL-style event against the live satellite API.
-- **Why the Lambda isn't live:** deployment from our AWS account was blocked by an AWS Organizations service control policy that denies the CloudFormation and Lambda actions. The web app already supports the Lambda (`VITE_API_URL`). Until then it runs the same engine in the browser and labels every result "Computed in your browser (AWS endpoint not configured)".
+- **AWS Lambda + Function URL (live, ap-southeast-2 Sydney):** every real check from the live app is sent to the `dhoop-diagnose` function. It fetches the satellite sunlight, runs the diagnosis engine (`lambda/handler.ts` → `engine/diagnose.ts`) and returns the verdict with its data provenance. The report header says "Computed on AWS Lambda". Verified on 11 Oct 2026: CORS preflight 200, POST 200 with the full diagnosis in about 3–5 s, and invalid locations rejected with 400.
+- **Amazon CloudWatch Logs:** the handler writes a structured log line per check: the satellite grid cell and hours fetched, then the verdict, performance ratios and any missing satellite hours.
+- **Resilience:** if the Lambda can't be reached, the app runs the same engine in the browser and labels the result "Computed in your browser (AWS service unreachable)", so the check never silently changes where it ran.
+- **AWS SAM:** `infra/template.yaml` defines the function, its URL and log group. An earlier SAM deployment to ap-south-1 (Mumbai) was blocked by an AWS Organizations service control policy denying the CloudFormation and Lambda actions, so the function was created from the Lambda console in Sydney instead. The handler has automated tests.
 
 ## Design and usability
 
